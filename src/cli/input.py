@@ -1,3 +1,4 @@
+import os
 import sys
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -41,6 +42,11 @@ def add_common_args(
     if include_ollama:
         parser.add_argument("--ollama", action="store_true", help="Use Ollama for local LLM inference")
     parser.add_argument("--model", type=str, required=False, help="Model name to use (e.g., gpt-4o)")
+    parser.add_argument(
+        "--claude-subagent",
+        action="store_true",
+        help="Use the local Claude CLI as the LLM (no API key required). Sets USE_CLAUDE_SUBAGENT=true.",
+    )
     return parser
 
 
@@ -268,7 +274,19 @@ def parse_cli_inputs(
         "analysts_all": getattr(args, "analysts_all", False),
         "analysts": getattr(args, "analysts", None),
     })
-    model_name, model_provider = select_model(getattr(args, "ollama", False), getattr(args, "model", None))
+
+    # --claude-subagent: skip model picker, route all LLM calls through `claude -p`
+    if getattr(args, "claude_subagent", False):
+        os.environ["USE_CLAUDE_SUBAGENT"] = "true"
+        model_name = "claude-subagent"
+        model_provider = "ClaudeSubagent"
+        print(
+            f"\nUsing {Fore.CYAN}Claude Subagent{Style.RESET_ALL} for LLM inference "
+            f"(no API key required)\n"
+        )
+    else:
+        model_name, model_provider = select_model(getattr(args, "ollama", False), getattr(args, "model", None))
+
     start_date, end_date = resolve_dates(getattr(args, "start_date", None), getattr(args, "end_date", None), default_months_back=default_months_back)
 
     return CLIInputs(

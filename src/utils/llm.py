@@ -1,10 +1,110 @@
 """Helper functions for LLM"""
 
 import json
+import os
+import re
+import subprocess
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
 from src.graph.state import AgentState
+
+
+def call_claude_subagent(
+    prompt: any,
+    pydantic_model: type[BaseModel],
+    agent_name: str | None = None,
+    max_retries: int = 3,
+    default_factory=None,
+) -> BaseModel:
+    """
+    Makes an LLM call by spawning a Claude subagent via the `claude -p` CLI.
+    No LLM API key required — uses the local Claude Code installation.
+
+    Args:
+        prompt: A LangChain ChatPromptValue (with .messages), or any stringifiable object
+        pydantic_model: The Pydantic model class to structure the output
+        agent_name: Optional name for progress updates
+        max_retries: Maximum number of retries (default: 3)
+        default_factory: Optional factory function to create default response on failure
+
+    Returns:
+        An instance of the specified Pydantic model
+    """
+    # Extract text from a LangChain ChatPromptValue or plain string
+    prompt_parts = []
+    if hasattr(prompt, "messages"):
+        for msg in prompt.messages:
+            type_name = type(msg).__name__.replace("Message", "").upper()
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            prompt_parts.append(f"[{type_name}]\n{content}")
+    else:
+        prompt_parts.append(str(prompt))
+
+    full_prompt = "\n\n".join(prompt_parts)
+    full_prompt += (
+        "\n\nIMPORTANT: Respond with ONLY a valid JSON object. "
+        "No markdown fences, no explanation, no extra text — just raw JSON."
+    )
+
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(
+                ["claude", "-p", full_prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=os.environ.copy(),
+            )
+
+            if result.returncode != 0:
+                raise Exception(
+                    f"Claude CLI exited {result.returncode}: {result.stderr[:300]}"
+                )
+
+            response_text = result.stdout.strip()
+
+            # 1. Try direct JSON parse
+            parsed = None
+            try:
+                parsed = json.loads(response_text)
+            except json.JSONDecodeError:
+                pass
+
+            # 2. Try extracting from ```json ... ``` block
+            if parsed is None:
+                parsed = extract_json_from_response(response_text)
+
+            # 3. Last resort: grab the first {...} blob
+            if parsed is None:
+                match = re.search(r"\{.*\}", response_text, re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group())
+                    except json.JSONDecodeError:
+                        pass
+
+            if parsed is not None:
+                return pydantic_model(**parsed)
+
+            raise Exception(
+                f"Could not parse JSON from Claude response: {response_text[:300]}"
+            )
+
+        except Exception as e:
+            if agent_name:
+                progress.update_status(
+                    agent_name, None, f"Error - retry {attempt + 1}/{max_retries}"
+                )
+            print(f"[claude-subagent] attempt {attempt + 1}/{max_retries} failed: {e}")
+
+            if attempt == max_retries - 1:
+                print(f"[claude-subagent] all retries exhausted for {agent_name}")
+                if default_factory:
+                    return default_factory()
+                return create_default_response(pydantic_model)
+
+    return create_default_response(pydantic_model)
 
 
 def call_llm(
@@ -29,7 +129,18 @@ def call_llm(
     Returns:
         An instance of the specified Pydantic model
     """
-    
+
+    # ── Claude subagent short-circuit ──────────────────────────────────────────
+    if os.getenv("USE_CLAUDE_SUBAGENT", "").lower() in ("1", "true", "yes"):
+        return call_claude_subagent(
+            prompt=prompt,
+            pydantic_model=pydantic_model,
+            agent_name=agent_name,
+            max_retries=max_retries,
+            default_factory=default_factory,
+        )
+    # ──────────────────────────────────────────────────────────────────────────
+
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:
         model_name, model_provider = get_agent_model_config(state, agent_name)
