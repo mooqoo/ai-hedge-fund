@@ -1,0 +1,11 @@
+{
+  "name": "ai-hedge-fund",
+  "version": "0.1.0",
+  "description": "Slash commands and investor-persona subagents that drive the AI Hedge Fund multi-agent stock analysis tool.",
+  "author": {
+    "name": "mooqoo",
+    "url": "https://github.com/mooqoo/ai-hedge-fund"
+  },
+  "homepage": "https://github.com/mooqoo/ai-hedge-fund",
+  "keywords": ["stocks", "trading", "analysis", "hedge-fund", "investing"]
+}
